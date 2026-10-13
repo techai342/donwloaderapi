@@ -171,6 +171,77 @@ export function sanitizeFileName(name: string): string {
   return cleaned || 'download';
 }
 
+async function downloadViaRapidApi(
+  url: string,
+  quality: string,
+  type: 'video' | 'audio',
+  customTitle?: string
+): Promise<DownloadResult | null> {
+  const rapidKey = process.env.RAPIDAPI_KEY;
+  if (!rapidKey) return null;
+
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/|v\/))([a-zA-Z0-9_-]{11})/);
+  if (!match) return null;
+  const videoId = match[1];
+
+  try {
+    const res = await fetch(`https://yt-api.p.rapidapi.com/dl?id=${videoId}`, {
+      headers: {
+        'x-rapidapi-host': 'yt-api.p.rapidapi.com',
+        'x-rapidapi-key': rapidKey,
+      },
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    const formats = (data.formats || data.adaptiveFormats || []) as Array<{
+      mimeType?: string;
+      ext?: string;
+      height?: number;
+      url?: string;
+    }>;
+    if (!formats || formats.length === 0) return null;
+
+    let target = null;
+    if (type === 'audio') {
+      target = formats.find((f) => f.mimeType?.includes('audio') || f.ext === 'm4a' || f.ext === 'mp3') || formats[0];
+    } else {
+      const height = parseInt(quality) || 720;
+      target = formats.find((f) => f.height && f.height <= height && f.url) || formats[0];
+    }
+
+    const downloadUrl = target?.url;
+    if (!downloadUrl) return null;
+
+    const id = Math.random().toString(36).substring(2, 10);
+    const ext = type === 'audio' ? 'm4a' : 'mp4';
+    const safeBase = customTitle ? sanitizeFileName(customTitle) : `youtube_${id}`;
+    const filePath = path.join(TEMP_DIR, `${id}_${safeBase}.${ext}`);
+
+    const fileStream = await fetch(downloadUrl);
+    if (!fileStream.ok) return null;
+
+    const buffer = Buffer.from(await fileStream.arrayBuffer());
+    fs.writeFileSync(filePath, buffer);
+
+    return {
+      filePath,
+      fileName: `${safeBase}.${ext}`,
+      contentType: type === 'audio' ? 'audio/mp4' : 'video/mp4',
+      cleanup: () => {
+        try {
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        } catch {
+          // Ignore
+        }
+      },
+    };
+  } catch (err) {
+    console.warn('RapidAPI download attempt failed:', err);
+    return null;
+  }
+}
+
 /**
  * Downloads a video or audio file to a temporary file with ffmpeg processing,
  * returning the file path and metadata for streaming.
@@ -182,6 +253,12 @@ export async function downloadToFile(
   customTitle?: string
 ): Promise<DownloadResult> {
   cleanOldTempFiles();
+
+  // 1. Try RapidAPI if RAPIDAPI_KEY is configured
+  if (process.env.RAPIDAPI_KEY) {
+    const rapidResult = await downloadViaRapidApi(url, quality, type, customTitle);
+    if (rapidResult) return rapidResult;
+  }
 
   const binaryPath = await ensureExecutableBinary();
   const ffmpegLocation = getFfmpegLocation();
