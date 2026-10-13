@@ -1,15 +1,25 @@
-import { spawn, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
-const YT_DLP_PATH = path.resolve(process.cwd(), 'bin', 'yt-dlp.exe');
-let FFMPEG_PATH = '';
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  FFMPEG_PATH = require('ffmpeg-static') || '';
-} catch {
-  FFMPEG_PATH = '';
+const BIN_DIR = path.resolve(process.cwd(), 'bin');
+const YT_DLP_PATH = path.resolve(BIN_DIR, 'yt-dlp.exe');
+const BIN_FFMPEG = path.resolve(BIN_DIR, 'ffmpeg.exe');
+
+let FFMPEG_LOCATION = '';
+if (fs.existsSync(/*turbopackIgnore: true*/ BIN_FFMPEG)) {
+  FFMPEG_LOCATION = BIN_DIR;
+} else {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const staticFfmpeg = require('ffmpeg-static') || '';
+    if (staticFfmpeg && fs.existsSync(/*turbopackIgnore: true*/ staticFfmpeg)) {
+      FFMPEG_LOCATION = path.dirname(staticFfmpeg);
+    }
+  } catch {
+    FFMPEG_LOCATION = '';
+  }
 }
 
 // Temporary directory for processing downloads
@@ -25,7 +35,7 @@ export interface DownloadResult {
   cleanup: () => void;
 }
 
-// Clean up files older than 30 minutes in temp directory
+// Clean up files older than 20 minutes in temp directory
 export function cleanOldTempFiles() {
   try {
     const files = fs.readdirSync(TEMP_DIR);
@@ -33,7 +43,7 @@ export function cleanOldTempFiles() {
     for (const f of files) {
       const fullPath = path.join(TEMP_DIR, f);
       const stat = fs.statSync(fullPath);
-      if (now - stat.mtimeMs > 30 * 60 * 1000) {
+      if (now - stat.mtimeMs > 20 * 60 * 1000) {
         fs.unlinkSync(fullPath);
       }
     }
@@ -42,9 +52,16 @@ export function cleanOldTempFiles() {
   }
 }
 
-// Sanitize filename for safe HTTP download headers
+// Sanitize filename to ensure 100% Windows and RFC HTTP compatibility
 export function sanitizeFileName(name: string): string {
-  return name.replace(/[\\/:*?"<>|]/g, '').trim().substring(0, 100) || 'youtube_download';
+  const cleaned = name
+    .replace(/[\\/:*?"<>|#%&{}\\$!'`+@=^~[\]]/g, ' ')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 65);
+
+  return cleaned || 'download';
 }
 
 /**
@@ -61,37 +78,27 @@ export async function downloadToFile(
 
   const id = Math.random().toString(36).substring(2, 10);
   const ext = type === 'audio' ? (quality.includes('m4a') ? 'm4a' : 'mp3') : 'mp4';
-  const rawFileName = customTitle ? `${sanitizeFileName(customTitle)}.${ext}` : `youtube_${id}.${ext}`;
-  const outPath = path.join(TEMP_DIR, `${id}_${rawFileName}`);
+  const safeBase = customTitle ? sanitizeFileName(customTitle) : `youtube_${id}`;
+  
+  // Use yt-dlp %(ext)s template to prevent extension conflicts during extraction
+  const outputTemplate = path.join(TEMP_DIR, `${id}_${safeBase}.%(ext)s`);
+  const expectedPath = path.join(TEMP_DIR, `${id}_${safeBase}.${ext}`);
 
-  const args: string[] = [
-    '--no-playlist',
-    '--no-warnings',
-  ];
+  const args: string[] = ['--no-playlist', '--no-warnings'];
 
-  if (FFMPEG_PATH && fs.existsSync(FFMPEG_PATH)) {
-    args.push('--ffmpeg-location', FFMPEG_PATH);
+  if (FFMPEG_LOCATION) {
+    args.push('--ffmpeg-location', FFMPEG_LOCATION);
   }
 
   if (type === 'audio') {
-    if (ext === 'm4a') {
-      args.push(
-        '-f',
-        'ba[ext=m4a]/ba',
-        '-o',
-        outPath
-      );
-    } else {
-      args.push(
-        '-x',
-        '--audio-format',
-        'mp3',
-        '--audio-quality',
-        quality.includes('320') ? '320k' : '192k',
-        '-o',
-        outPath
-      );
-    }
+    const audioFmt = ext === 'm4a' ? 'm4a' : 'mp3';
+    args.push(
+      '-x',
+      '--audio-format',
+      audioFmt,
+      '-o',
+      outputTemplate
+    );
   } else {
     const height = parseInt(quality) || 720;
     args.push(
@@ -100,7 +107,7 @@ export async function downloadToFile(
       '--merge-output-format',
       'mp4',
       '-o',
-      outPath
+      outputTemplate
     );
   }
 
@@ -110,32 +117,46 @@ export async function downloadToFile(
     execFile(
       YT_DLP_PATH,
       args,
-      { maxBuffer: 1024 * 1024 * 50 },
+      { maxBuffer: 1024 * 1024 * 60 },
       (error, stdout, stderr) => {
         if (error) {
           console.error('yt-dlp download error:', stderr || error.message);
-          return reject(new Error('Failed to download video. Please verify the URL.'));
+          return reject(
+            new Error(
+              'Failed to download media. Please check URL or choose another format.'
+            )
+          );
         }
 
-        // Locate created file (sometimes yt-dlp adjusts extension)
-        let finalFilePath = outPath;
+        // Locate created file
+        let finalFilePath = expectedPath;
         if (!fs.existsSync(finalFilePath)) {
-          // Look for any file matching prefix id_ in temp folder
           const files = fs.readdirSync(TEMP_DIR);
-          const found = files.find(f => f.startsWith(`${id}_`));
-          if (found) {
-            finalFilePath = path.join(TEMP_DIR, found);
+          const completedFiles = files.filter(
+            (f) =>
+              f.startsWith(`${id}_`) &&
+              !f.endsWith('.part') &&
+              !f.endsWith('.ytdl')
+          );
+
+          if (completedFiles.length > 0) {
+            const exactExt = completedFiles.find((f) => f.endsWith(`.${ext}`));
+            finalFilePath = path.join(TEMP_DIR, exactExt || completedFiles[0]);
           } else {
             return reject(new Error('Downloaded file could not be found.'));
           }
         }
 
-        const actualFileName = path.basename(finalFilePath).replace(new RegExp(`^${id}_`), '');
+        const actualFileName = path
+          .basename(finalFilePath)
+          .replace(new RegExp(`^${id}_`), '');
         const actualExt = path.extname(actualFileName).toLowerCase();
         const contentType =
-          actualExt === '.mp3' ? 'audio/mpeg' :
-          actualExt === '.m4a' ? 'audio/mp4' :
-          'video/mp4';
+          actualExt === '.mp3'
+            ? 'audio/mpeg'
+            : actualExt === '.m4a'
+            ? 'audio/mp4'
+            : 'video/mp4';
 
         resolve({
           filePath: finalFilePath,

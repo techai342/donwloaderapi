@@ -39,3 +39,17 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Large binaries (downloaded via npm or setup script)
+bin/ffmpeg.exe
+
+# Temporary downloader media cache
+yt_downloader_cache/
+*.mp4
+*.mp3
+*.m4a
+*.webm
+*.part
+*.ytdl
+test_*
+

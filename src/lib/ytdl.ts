@@ -2,14 +2,18 @@ import { execFile, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
-// Resolve binaries
-const YT_DLP_PATH = path.resolve(process.cwd(), 'bin', 'yt-dlp.exe');
-let FFMPEG_PATH = '';
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  FFMPEG_PATH = require('ffmpeg-static') || '';
-} catch {
-  FFMPEG_PATH = '';
+const BIN_DIR = path.resolve(process.cwd(), 'bin');
+const YT_DLP_PATH = path.resolve(BIN_DIR, 'yt-dlp.exe');
+const BIN_FFMPEG = path.resolve(BIN_DIR, 'ffmpeg.exe');
+
+let FFMPEG_PATH = fs.existsSync(/*turbopackIgnore: true*/ BIN_FFMPEG) ? BIN_FFMPEG : '';
+if (!FFMPEG_PATH) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    FFMPEG_PATH = require('ffmpeg-static') || '';
+  } catch {
+    FFMPEG_PATH = '';
+  }
 }
 
 export interface VideoFormatOption {
@@ -98,7 +102,7 @@ export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
     cleanUrl,
   ];
 
-  if (FFMPEG_PATH && fs.existsSync(FFMPEG_PATH)) {
+  if (FFMPEG_PATH && fs.existsSync(/*turbopackIgnore: true*/ FFMPEG_PATH)) {
     args.push('--ffmpeg-location', FFMPEG_PATH);
   }
 
@@ -226,7 +230,7 @@ export function createDownloadProcess(url: string, quality: string, type: 'video
 
   const args: string[] = ['--no-warnings', '--no-playlist'];
 
-  if (FFMPEG_PATH && fs.existsSync(FFMPEG_PATH)) {
+  if (FFMPEG_PATH && fs.existsSync(/*turbopackIgnore: true*/ FFMPEG_PATH)) {
     args.push('--ffmpeg-location', FFMPEG_PATH);
   }
 
