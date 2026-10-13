@@ -157,7 +157,7 @@ export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
     '--no-warnings',
     '--no-check-certificates',
     '--extractor-args',
-    'youtube:player_client=android,ios,web',
+    'youtube:player_client=android',
     '--user-agent',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     cleanUrl,
