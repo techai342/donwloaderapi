@@ -2,7 +2,7 @@ import { execFile, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
-import { getExecutableBinaryPath, getFfmpegLocation } from './downloader';
+import { ensureExecutableBinary, getExecutableBinaryPath, getFfmpegLocation } from './downloader';
 
 export interface VideoFormatOption {
   id: string;
@@ -143,7 +143,7 @@ export async function getFallbackVideoInfo(url: string): Promise<VideoInfoResult
 // Extract Video Info using yt-dlp with automatic fallback
 export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
   const cleanUrl = url.trim();
-  const binaryPath = getExecutableBinaryPath();
+  const binaryPath = await ensureExecutableBinary();
   const ffmpegLocation = getFfmpegLocation();
 
   // If binary doesn't exist, use instant resilient oEmbed fallback
@@ -156,6 +156,10 @@ export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
     '--no-playlist',
     '--no-warnings',
     '--no-check-certificates',
+    '--extractor-args',
+    'youtube:player_client=android,ios,web',
+    '--user-agent',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     cleanUrl,
   ];
 

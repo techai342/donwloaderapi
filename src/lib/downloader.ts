@@ -3,33 +3,85 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
-// Resolve executable binary path with AWS Lambda / Vercel compatibility
-export function getExecutableBinaryPath(): string {
+// Resilient binary resolver that ensures yt-dlp is always present and executable on Vercel
+export async function ensureExecutableBinary(): Promise<string> {
   if (process.platform === 'win32') {
-    return path.resolve(process.cwd(), 'bin', 'yt-dlp.exe');
+    const winPath = path.resolve(process.cwd(), 'bin', 'yt-dlp.exe');
+    if (fs.existsSync(/*turbopackIgnore: true*/ winPath)) return winPath;
   }
 
-  // On Linux (Vercel / AWS Lambda): copy binary to /tmp where it is writable and chmod +x
-  const sourcePath = path.resolve(process.cwd(), 'bin', 'yt-dlp');
+  // Target in writable /tmp (Lambda/Vercel standard)
   const targetPath = path.resolve(os.tmpdir(), 'yt-dlp-bin');
 
-  try {
-    if (!fs.existsSync(targetPath) && fs.existsSync(sourcePath)) {
-      fs.copyFileSync(sourcePath, targetPath);
+  if (fs.existsSync(/*turbopackIgnore: true*/ targetPath)) {
+    try {
       fs.chmodSync(targetPath, 0o755);
-    } else if (fs.existsSync(targetPath)) {
-      try {
-        fs.chmodSync(targetPath, 0o755);
-      } catch {
-        // Ignore
-      }
+    } catch {
+      // Ignore
     }
-  } catch (err) {
-    console.warn('Error preparing yt-dlp in /tmp:', err);
-    return sourcePath;
+    return targetPath;
   }
 
-  return fs.existsSync(targetPath) ? targetPath : sourcePath;
+  // Look for bundled binary in candidate paths if they are valid ELF executables
+  const candidates = [
+    path.resolve(process.cwd(), 'bin', 'yt-dlp'),
+    path.resolve(process.cwd(), 'public', 'bin', 'yt-dlp'),
+  ];
+
+  for (const src of candidates) {
+    if (fs.existsSync(/*turbopackIgnore: true*/ src)) {
+      try {
+        const buf = Buffer.alloc(4);
+        const fd = fs.openSync(/*turbopackIgnore: true*/ src, 'r');
+        fs.readSync(fd, buf, 0, 4, 0);
+        fs.closeSync(fd);
+
+        // Check for Linux ELF magic bytes (\x7f E L F)
+        if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) {
+          fs.copyFileSync(src, targetPath);
+          fs.chmodSync(targetPath, 0o755);
+          return targetPath;
+        }
+      } catch (err) {
+        console.warn('Failed to verify or copy binary candidate:', src, err);
+      }
+    }
+  }
+
+  // Auto-download standalone Linux binary to /tmp if not bundled (super fast on Vercel gigabit)
+  try {
+    console.info('Downloading standalone yt-dlp to /tmp...');
+    const binUrl =
+      process.platform === 'win32'
+        ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+        : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux';
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const res = await fetch(binUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const buffer = Buffer.from(await res.arrayBuffer());
+      fs.writeFileSync(targetPath, buffer);
+      fs.chmodSync(targetPath, 0o755);
+      return targetPath;
+    }
+  } catch (netErr) {
+    console.error('Failed to auto-download yt-dlp to /tmp:', netErr);
+  }
+
+  return targetPath;
+}
+
+export function getExecutableBinaryPath(): string {
+  if (process.platform === 'win32') {
+    const winPath = path.resolve(process.cwd(), 'bin', 'yt-dlp.exe');
+    if (fs.existsSync(/*turbopackIgnore: true*/ winPath)) return winPath;
+  }
+  const targetPath = path.resolve(os.tmpdir(), 'yt-dlp-bin');
+  if (fs.existsSync(/*turbopackIgnore: true*/ targetPath)) return targetPath;
+  return path.resolve(process.cwd(), 'bin', 'yt-dlp');
 }
 
 export function getFfmpegLocation(): string {
@@ -104,22 +156,24 @@ export async function downloadToFile(
 ): Promise<DownloadResult> {
   cleanOldTempFiles();
 
-  const binaryPath = getExecutableBinaryPath();
+  const binaryPath = await ensureExecutableBinary();
   const ffmpegLocation = getFfmpegLocation();
   const hasFfmpeg = !!ffmpegLocation;
 
   const id = Math.random().toString(36).substring(2, 10);
   const ext = type === 'audio' ? (quality.includes('m4a') ? 'm4a' : 'mp3') : 'mp4';
   const safeBase = customTitle ? sanitizeFileName(customTitle) : `youtube_${id}`;
-  
-  // Use yt-dlp %(ext)s template to prevent extension conflicts
+
   const outputTemplate = path.join(TEMP_DIR, `${id}_${safeBase}.%(ext)s`);
   const expectedPath = path.join(TEMP_DIR, `${id}_${safeBase}.${ext}`);
 
   const args: string[] = [
     '--no-playlist',
     '--no-warnings',
-    '--no-check-certificates',
+    '--extractor-args',
+    'youtube:player_client=android,ios,web',
+    '--user-agent',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   ];
 
   if (hasFfmpeg) {
@@ -139,13 +193,7 @@ export async function downloadToFile(
         outputTemplate
       );
     } else {
-      // Serverless mode without FFmpeg: extract highest quality audio stream directly
-      args.push(
-        '-f',
-        'ba[ext=m4a]/ba/bestaudio',
-        '-o',
-        outputTemplate
-      );
+      args.push('-f', 'ba[ext=m4a]/ba/bestaudio', '-o', outputTemplate);
     }
   } else {
     const height = parseInt(quality) || 720;
@@ -159,7 +207,6 @@ export async function downloadToFile(
         outputTemplate
       );
     } else {
-      // Serverless mode without FFmpeg: select progressive stream with audio+video pre-combined
       args.push(
         '-f',
         `b[height<=${height}][ext=mp4]/b[height<=${height}]/best[ext=mp4]/best`,
@@ -178,10 +225,11 @@ export async function downloadToFile(
       { maxBuffer: 1024 * 1024 * 60 },
       (error, stdout, stderr) => {
         if (error) {
-          console.error('yt-dlp download error:', stderr || error.message);
+          const detail = (stderr || error.message || '').trim();
+          console.error('yt-dlp download error:', detail);
           return reject(
             new Error(
-              'Failed to download media. Please check URL or choose another format.'
+              detail ? `Download failed: ${detail.substring(0, 150)}` : 'Failed to download media.'
             )
           );
         }
