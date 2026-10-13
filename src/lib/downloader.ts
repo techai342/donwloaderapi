@@ -3,9 +3,20 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
+const isWin = process.platform === 'win32';
 const BIN_DIR = path.resolve(process.cwd(), 'bin');
-const YT_DLP_PATH = path.resolve(BIN_DIR, 'yt-dlp.exe');
-const BIN_FFMPEG = path.resolve(BIN_DIR, 'ffmpeg.exe');
+const YT_DLP_NAME = isWin ? 'yt-dlp.exe' : 'yt-dlp';
+const YT_DLP_PATH = path.resolve(BIN_DIR, YT_DLP_NAME);
+const BIN_FFMPEG = path.resolve(BIN_DIR, isWin ? 'ffmpeg.exe' : 'ffmpeg');
+
+// Ensure executable permissions on Linux (Vercel)
+if (!isWin && fs.existsSync(/*turbopackIgnore: true*/ YT_DLP_PATH)) {
+  try {
+    fs.chmodSync(YT_DLP_PATH, 0o755);
+  } catch {
+    // Ignore permission error
+  }
+}
 
 let FFMPEG_LOCATION = '';
 if (fs.existsSync(/*turbopackIgnore: true*/ BIN_FFMPEG)) {
