@@ -84,6 +84,33 @@ export function getExecutableBinaryPath(): string {
   return path.resolve(process.cwd(), 'bin', 'yt-dlp');
 }
 
+export function getCookiesFilePath(): string | null {
+  // 1. Check if YOUTUBE_COOKIES environment variable is set
+  const cookiesEnv = process.env.YOUTUBE_COOKIES;
+  if (cookiesEnv && cookiesEnv.trim().length > 0) {
+    const targetCookiesPath = path.resolve(os.tmpdir(), 'yt_cookies.txt');
+    try {
+      fs.writeFileSync(targetCookiesPath, cookiesEnv.trim(), 'utf-8');
+      return targetCookiesPath;
+    } catch (e) {
+      console.warn('Failed to write YOUTUBE_COOKIES to /tmp:', e);
+    }
+  }
+
+  // 2. Check if local cookies.txt file exists in project root or /tmp
+  const localCandidates = [
+    path.resolve(process.cwd(), 'cookies.txt'),
+    path.resolve(os.tmpdir(), 'cookies.txt'),
+  ];
+  for (const c of localCandidates) {
+    if (fs.existsSync(/*turbopackIgnore: true*/ c)) {
+      return c;
+    }
+  }
+
+  return null;
+}
+
 export function getFfmpegLocation(): string {
   const isWin = process.platform === 'win32';
   const binFfmpeg = path.resolve(process.cwd(), 'bin', isWin ? 'ffmpeg.exe' : 'ffmpeg');
@@ -170,11 +197,18 @@ export async function downloadToFile(
   const args: string[] = [
     '--no-playlist',
     '--no-warnings',
+    '--no-check-certificates',
+    '--geo-bypass',
     '--extractor-args',
-    'youtube:player_client=android,ios,web',
+    'youtube:player_client=mweb,android,ios',
     '--user-agent',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   ];
+
+  const cookiesPath = getCookiesFilePath();
+  if (cookiesPath) {
+    args.push('--cookies', cookiesPath);
+  }
 
   if (hasFfmpeg) {
     args.push('--ffmpeg-location', ffmpegLocation);
@@ -227,11 +261,16 @@ export async function downloadToFile(
         if (error) {
           const detail = (stderr || error.message || '').trim();
           console.error('yt-dlp download error:', detail);
-          return reject(
-            new Error(
-              detail ? `Download failed: ${detail.substring(0, 150)}` : 'Failed to download media.'
-            )
-          );
+          let userMessage = detail ? `Download failed: ${detail.substring(0, 160)}` : 'Failed to download media.';
+          if (
+            detail.includes('Sign in to confirm you’re not a bot') ||
+            detail.includes("confirm you're not a bot") ||
+            detail.includes('not a bot')
+          ) {
+            userMessage =
+              'YouTube Bot Protection: YouTube has restricted this datacenter IP. Please add YOUTUBE_COOKIES to your Vercel Environment Variables.';
+          }
+          return reject(new Error(userMessage));
         }
 
         // Locate created file

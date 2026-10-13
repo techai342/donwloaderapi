@@ -445,11 +445,21 @@ export const VideoCard: React.FC<VideoCardProps> = ({ video }) => {
                 </div>
 
                 <h3 className="text-lg font-bold text-white">
-                  Preparation Failed
+                  {errorMessage?.includes('Bot Protection') ? 'YouTube Cloud Security' : 'Preparation Failed'}
                 </h3>
-                <p className="mt-2 text-xs text-rose-300 bg-rose-950/40 border border-rose-500/30 p-3 rounded-xl">
+                <p className="mt-2 text-xs text-rose-300 bg-rose-950/40 border border-rose-500/30 p-3 rounded-xl leading-relaxed text-left">
                   {errorMessage || 'YouTube media format could not be extracted.'}
                 </p>
+                {errorMessage?.includes('YOUTUBE_COOKIES') && (
+                  <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-left">
+                    <p className="text-[11px] text-amber-300 font-medium">💡 Quick Fix (1 minute):</p>
+                    <p className="text-[10px] text-zinc-400 mt-1">
+                      1. Export YouTube cookies via <b>&quot;Get cookies.txt LOCALLY&quot;</b> extension.<br />
+                      2. Go to Vercel &gt; Settings &gt; Environment Variables &gt; Add <b>YOUTUBE_COOKIES</b>.<br />
+                      3. Redeploy to activate 100% unrestricted downloads.
+                    </p>
+                  </div>
+                )}
 
                 <div className="mt-6 flex gap-3">
                   <button

@@ -2,7 +2,7 @@ import { execFile, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
-import { ensureExecutableBinary, getExecutableBinaryPath, getFfmpegLocation } from './downloader';
+import { ensureExecutableBinary, getCookiesFilePath, getExecutableBinaryPath, getFfmpegLocation } from './downloader';
 
 export interface VideoFormatOption {
   id: string;
@@ -165,6 +165,11 @@ export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
 
   if (ffmpegLocation) {
     args.push('--ffmpeg-location', ffmpegLocation);
+  }
+
+  const cookiesPath = getCookiesFilePath();
+  if (cookiesPath) {
+    args.push('--cookies', cookiesPath);
   }
 
   return new Promise((resolve) => {
