@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getVideoInfo, isValidYoutubeUrl } from '@/lib/ytdl';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 export async function GET(request: NextRequest) {
   try {

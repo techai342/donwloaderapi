@@ -7,6 +7,7 @@ import os from 'os';
 import fs from 'fs';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 const TEMP_DIR = path.resolve(os.tmpdir(), 'yt_downloader_cache');
 

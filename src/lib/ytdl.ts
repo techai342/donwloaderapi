@@ -2,30 +2,7 @@ import { execFile, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
-const isWin = process.platform === 'win32';
-const BIN_DIR = path.resolve(process.cwd(), 'bin');
-const YT_DLP_NAME = isWin ? 'yt-dlp.exe' : 'yt-dlp';
-const YT_DLP_PATH = path.resolve(BIN_DIR, YT_DLP_NAME);
-const BIN_FFMPEG = path.resolve(BIN_DIR, isWin ? 'ffmpeg.exe' : 'ffmpeg');
-
-// Ensure executable permissions on Linux (e.g. Vercel)
-if (!isWin && fs.existsSync(/*turbopackIgnore: true*/ YT_DLP_PATH)) {
-  try {
-    fs.chmodSync(YT_DLP_PATH, 0o755);
-  } catch {
-    // Ignore permission error in restricted environments
-  }
-}
-
-let FFMPEG_PATH = fs.existsSync(/*turbopackIgnore: true*/ BIN_FFMPEG) ? BIN_FFMPEG : '';
-if (!FFMPEG_PATH) {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    FFMPEG_PATH = require('ffmpeg-static') || '';
-  } catch {
-    FFMPEG_PATH = '';
-  }
-}
+import { getExecutableBinaryPath, getFfmpegLocation } from './downloader';
 
 export interface VideoFormatOption {
   id: string;
@@ -166,9 +143,11 @@ export async function getFallbackVideoInfo(url: string): Promise<VideoInfoResult
 // Extract Video Info using yt-dlp with automatic fallback
 export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
   const cleanUrl = url.trim();
+  const binaryPath = getExecutableBinaryPath();
+  const ffmpegLocation = getFfmpegLocation();
 
   // If binary doesn't exist, use instant resilient oEmbed fallback
-  if (!fs.existsSync(/*turbopackIgnore: true*/ YT_DLP_PATH)) {
+  if (!fs.existsSync(/*turbopackIgnore: true*/ binaryPath)) {
     return await getFallbackVideoInfo(cleanUrl);
   }
 
@@ -176,16 +155,17 @@ export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
     '-J',
     '--no-playlist',
     '--no-warnings',
+    '--no-check-certificates',
     cleanUrl,
   ];
 
-  if (FFMPEG_PATH && fs.existsSync(/*turbopackIgnore: true*/ FFMPEG_PATH)) {
-    args.push('--ffmpeg-location', FFMPEG_PATH);
+  if (ffmpegLocation) {
+    args.push('--ffmpeg-location', ffmpegLocation);
   }
 
   return new Promise((resolve) => {
     execFile(
-      YT_DLP_PATH,
+      binaryPath,
       args,
       { maxBuffer: 1024 * 1024 * 30 },
       async (error, stdout) => {
@@ -301,14 +281,17 @@ export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
 
 // Download stream creator
 export function createDownloadProcess(url: string, quality: string, type: 'video' | 'audio') {
-  if (!fs.existsSync(YT_DLP_PATH)) {
+  const binaryPath = getExecutableBinaryPath();
+  const ffmpegLocation = getFfmpegLocation();
+
+  if (!fs.existsSync(binaryPath)) {
     throw new Error('yt-dlp binary is missing.');
   }
 
-  const args: string[] = ['--no-warnings', '--no-playlist'];
+  const args: string[] = ['--no-warnings', '--no-playlist', '--no-check-certificates'];
 
-  if (FFMPEG_PATH && fs.existsSync(/*turbopackIgnore: true*/ FFMPEG_PATH)) {
-    args.push('--ffmpeg-location', FFMPEG_PATH);
+  if (ffmpegLocation) {
+    args.push('--ffmpeg-location', ffmpegLocation);
   }
 
   if (type === 'audio') {
@@ -335,7 +318,7 @@ export function createDownloadProcess(url: string, quality: string, type: 'video
 
   args.push(url);
 
-  const proc = spawn(YT_DLP_PATH, args, {
+  const proc = spawn(binaryPath, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

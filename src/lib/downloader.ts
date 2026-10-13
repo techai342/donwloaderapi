@@ -3,34 +3,51 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
-const isWin = process.platform === 'win32';
-const BIN_DIR = path.resolve(process.cwd(), 'bin');
-const YT_DLP_NAME = isWin ? 'yt-dlp.exe' : 'yt-dlp';
-const YT_DLP_PATH = path.resolve(BIN_DIR, YT_DLP_NAME);
-const BIN_FFMPEG = path.resolve(BIN_DIR, isWin ? 'ffmpeg.exe' : 'ffmpeg');
-
-// Ensure executable permissions on Linux (Vercel)
-if (!isWin && fs.existsSync(/*turbopackIgnore: true*/ YT_DLP_PATH)) {
-  try {
-    fs.chmodSync(YT_DLP_PATH, 0o755);
-  } catch {
-    // Ignore permission error
+// Resolve executable binary path with AWS Lambda / Vercel compatibility
+export function getExecutableBinaryPath(): string {
+  if (process.platform === 'win32') {
+    return path.resolve(process.cwd(), 'bin', 'yt-dlp.exe');
   }
+
+  // On Linux (Vercel / AWS Lambda): copy binary to /tmp where it is writable and chmod +x
+  const sourcePath = path.resolve(process.cwd(), 'bin', 'yt-dlp');
+  const targetPath = path.resolve(os.tmpdir(), 'yt-dlp-bin');
+
+  try {
+    if (!fs.existsSync(targetPath) && fs.existsSync(sourcePath)) {
+      fs.copyFileSync(sourcePath, targetPath);
+      fs.chmodSync(targetPath, 0o755);
+    } else if (fs.existsSync(targetPath)) {
+      try {
+        fs.chmodSync(targetPath, 0o755);
+      } catch {
+        // Ignore
+      }
+    }
+  } catch (err) {
+    console.warn('Error preparing yt-dlp in /tmp:', err);
+    return sourcePath;
+  }
+
+  return fs.existsSync(targetPath) ? targetPath : sourcePath;
 }
 
-let FFMPEG_LOCATION = '';
-if (fs.existsSync(/*turbopackIgnore: true*/ BIN_FFMPEG)) {
-  FFMPEG_LOCATION = BIN_DIR;
-} else {
+export function getFfmpegLocation(): string {
+  const isWin = process.platform === 'win32';
+  const binFfmpeg = path.resolve(process.cwd(), 'bin', isWin ? 'ffmpeg.exe' : 'ffmpeg');
+  if (fs.existsSync(/*turbopackIgnore: true*/ binFfmpeg)) {
+    return path.dirname(binFfmpeg);
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const staticFfmpeg = require('ffmpeg-static') || '';
     if (staticFfmpeg && fs.existsSync(/*turbopackIgnore: true*/ staticFfmpeg)) {
-      FFMPEG_LOCATION = path.dirname(staticFfmpeg);
+      return path.dirname(staticFfmpeg);
     }
   } catch {
-    FFMPEG_LOCATION = '';
+    // Ignore
   }
+  return '';
 }
 
 // Temporary directory for processing downloads
@@ -87,46 +104,76 @@ export async function downloadToFile(
 ): Promise<DownloadResult> {
   cleanOldTempFiles();
 
+  const binaryPath = getExecutableBinaryPath();
+  const ffmpegLocation = getFfmpegLocation();
+  const hasFfmpeg = !!ffmpegLocation;
+
   const id = Math.random().toString(36).substring(2, 10);
   const ext = type === 'audio' ? (quality.includes('m4a') ? 'm4a' : 'mp3') : 'mp4';
   const safeBase = customTitle ? sanitizeFileName(customTitle) : `youtube_${id}`;
   
-  // Use yt-dlp %(ext)s template to prevent extension conflicts during extraction
+  // Use yt-dlp %(ext)s template to prevent extension conflicts
   const outputTemplate = path.join(TEMP_DIR, `${id}_${safeBase}.%(ext)s`);
   const expectedPath = path.join(TEMP_DIR, `${id}_${safeBase}.${ext}`);
 
-  const args: string[] = ['--no-playlist', '--no-warnings'];
+  const args: string[] = [
+    '--no-playlist',
+    '--no-warnings',
+    '--no-check-certificates',
+  ];
 
-  if (FFMPEG_LOCATION) {
-    args.push('--ffmpeg-location', FFMPEG_LOCATION);
+  if (hasFfmpeg) {
+    args.push('--ffmpeg-location', ffmpegLocation);
   }
 
   if (type === 'audio') {
-    const audioFmt = ext === 'm4a' ? 'm4a' : 'mp3';
-    args.push(
-      '-x',
-      '--audio-format',
-      audioFmt,
-      '-o',
-      outputTemplate
-    );
+    if (hasFfmpeg) {
+      const audioFmt = ext === 'm4a' ? 'm4a' : 'mp3';
+      args.push(
+        '-x',
+        '--audio-format',
+        audioFmt,
+        '--audio-quality',
+        quality.includes('320') ? '320k' : '192k',
+        '-o',
+        outputTemplate
+      );
+    } else {
+      // Serverless mode without FFmpeg: extract highest quality audio stream directly
+      args.push(
+        '-f',
+        'ba[ext=m4a]/ba/bestaudio',
+        '-o',
+        outputTemplate
+      );
+    }
   } else {
     const height = parseInt(quality) || 720;
-    args.push(
-      '-f',
-      `bv*[height<=${height}][ext=mp4]+ba[ext=m4a]/bv*[height<=${height}]+ba/b[height<=${height}]/best`,
-      '--merge-output-format',
-      'mp4',
-      '-o',
-      outputTemplate
-    );
+    if (hasFfmpeg) {
+      args.push(
+        '-f',
+        `bv*[height<=${height}][ext=mp4]+ba[ext=m4a]/bv*[height<=${height}]+ba/b[height<=${height}]/best`,
+        '--merge-output-format',
+        'mp4',
+        '-o',
+        outputTemplate
+      );
+    } else {
+      // Serverless mode without FFmpeg: select progressive stream with audio+video pre-combined
+      args.push(
+        '-f',
+        `b[height<=${height}][ext=mp4]/b[height<=${height}]/best[ext=mp4]/best`,
+        '-o',
+        outputTemplate
+      );
+    }
   }
 
   args.push(url.trim());
 
   return new Promise((resolve, reject) => {
     execFile(
-      YT_DLP_PATH,
+      binaryPath,
       args,
       { maxBuffer: 1024 * 1024 * 60 },
       (error, stdout, stderr) => {
