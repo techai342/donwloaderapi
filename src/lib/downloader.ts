@@ -3,6 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
+import { BUILTIN_COOKIES } from './cookiesData';
+
 // Resilient binary resolver that ensures yt-dlp is always present and executable on Vercel
 export async function ensureExecutableBinary(): Promise<string> {
   if (process.platform === 'win32') {
@@ -85,12 +87,17 @@ export function getExecutableBinaryPath(): string {
 }
 
 export function getCookiesFilePath(): string | null {
+  const targetCookiesPath = path.resolve(os.tmpdir(), 'yt_cookies.txt');
+
   // 1. Check if YOUTUBE_COOKIES environment variable is set
   const cookiesEnv = process.env.YOUTUBE_COOKIES;
   if (cookiesEnv && cookiesEnv.trim().length > 0) {
-    const targetCookiesPath = path.resolve(os.tmpdir(), 'yt_cookies.txt');
     try {
-      fs.writeFileSync(targetCookiesPath, cookiesEnv.trim(), 'utf-8');
+      const normalized = cookiesEnv
+        .replace(/\\r\\n/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t');
+      fs.writeFileSync(targetCookiesPath, normalized.trim(), 'utf-8');
       return targetCookiesPath;
     } catch (e) {
       console.warn('Failed to write YOUTUBE_COOKIES to /tmp:', e);
@@ -100,11 +107,22 @@ export function getCookiesFilePath(): string | null {
   // 2. Check if local cookies.txt file exists in project root or /tmp
   const localCandidates = [
     path.resolve(process.cwd(), 'cookies.txt'),
+    path.resolve(__dirname, 'cookies.txt'),
     path.resolve(os.tmpdir(), 'cookies.txt'),
   ];
   for (const c of localCandidates) {
     if (fs.existsSync(/*turbopackIgnore: true*/ c)) {
       return c;
+    }
+  }
+
+  // 3. Fallback to pre-bundled built-in cookies
+  if (BUILTIN_COOKIES && BUILTIN_COOKIES.length > 50) {
+    try {
+      fs.writeFileSync(targetCookiesPath, BUILTIN_COOKIES.trim(), 'utf-8');
+      return targetCookiesPath;
+    } catch (e) {
+      console.warn('Failed to write built-in cookies to /tmp:', e);
     }
   }
 
@@ -276,8 +294,6 @@ export async function downloadToFile(
     '--no-warnings',
     '--no-check-certificates',
     '--geo-bypass',
-    '--extractor-args',
-    'youtube:player_client=android',
     '--user-agent',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   ];
@@ -285,6 +301,8 @@ export async function downloadToFile(
   const cookiesPath = getCookiesFilePath();
   if (cookiesPath) {
     args.push('--cookies', cookiesPath);
+  } else {
+    args.push('--extractor-args', 'youtube:player_client=android');
   }
 
   if (hasFfmpeg) {

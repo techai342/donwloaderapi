@@ -156,21 +156,22 @@ export async function getVideoInfo(url: string): Promise<VideoInfoResult> {
     '--no-playlist',
     '--no-warnings',
     '--no-check-certificates',
-    '--extractor-args',
-    'youtube:player_client=android',
     '--user-agent',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    cleanUrl,
   ];
+
+  const cookiesPath = getCookiesFilePath();
+  if (cookiesPath) {
+    args.push('--cookies', cookiesPath);
+  } else {
+    args.push('--extractor-args', 'youtube:player_client=android');
+  }
 
   if (ffmpegLocation) {
     args.push('--ffmpeg-location', ffmpegLocation);
   }
 
-  const cookiesPath = getCookiesFilePath();
-  if (cookiesPath) {
-    args.push('--cookies', cookiesPath);
-  }
+  args.push(cleanUrl);
 
   return new Promise((resolve) => {
     execFile(
